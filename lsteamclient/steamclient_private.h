@@ -46,7 +46,6 @@ void *create_LinuxISteamMatchmakingServerListResponse(void *win, const char *ver
 void *create_LinuxISteamMatchmakingPingResponse(void *win, const char *version);
 void *create_LinuxISteamMatchmakingPlayersResponse(void *win, const char *version);
 void *create_LinuxISteamMatchmakingRulesResponse(void *win, const char *version);
-void *manual_convert_FSteamNetworkingSocketsDebugOutput(void *win_func);
 
 extern char g_tmppath[PATH_MAX];
 

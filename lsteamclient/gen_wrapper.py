@@ -5,8 +5,6 @@
 
 from __future__ import print_function
 
-CLANG_PATH='/usr/lib/clang/8.0.0'
-
 import pprint
 import sys
 import clang.cindex
@@ -15,9 +13,6 @@ import re
 import math
 
 sdk_versions = [
-    "144",
-    "143y",
-    "143x",
     "143",
     "142",
     "141",
@@ -85,6 +80,8 @@ sdk_versions = [
     "099w",
     "099v",
     "099u",
+    "next2",
+    "next",
 ]
 
 files = [
@@ -93,7 +90,6 @@ files = [
         "ISteamAppList",
         "ISteamClient",
         "ISteamController",
-        "ISteamGameSearch",
         "ISteamFriends",
         "ISteamHTMLSurface",
         "ISteamHTTP",
@@ -135,14 +131,8 @@ files = [
     ("isteamparentalsettings.h", [
         "ISteamParentalSettings"
     ]),
-    ("isteamnetworkingsockets.h", [
-        "ISteamNetworkingSockets"
-    ]),
     ("isteamnetworkingsocketsserialized.h", [
         "ISteamNetworkingSocketsSerialized"
-    ]),
-    ("isteamnetworkingutils.h", [
-        "ISteamNetworkingUtils"
     ]),
 ]
 
@@ -164,16 +154,6 @@ exempt_structs = [
         "ValvePackingSentinel_t"
 ]
 
-# we have converters for these written by hand because they're too complicated to generate
-manually_handled_structs = [
-        "SteamNetworkingMessage_t"
-]
-
-# manual converters for simple types (function pointers)
-manual_type_converters = [
-        "FSteamNetworkingSocketsDebugOutput"
-]
-
 #struct_conversion_cache = {
 #    '142': {
 #                'SteamUGCDetails_t': True,
@@ -181,8 +161,6 @@ manual_type_converters = [
 #           }
 #}
 struct_conversion_cache = {}
-
-converted_structs = []
 
 # callback classes for which we have a linux wrapper
 wrapped_classes = [
@@ -390,8 +368,6 @@ def find_windows_struct(struct):
 def struct_needs_conversion_nocache(struct):
     if strip_const(struct.spelling) in exempt_structs:
         return False
-    if strip_const(struct.spelling) in manually_handled_structs:
-        return True
     windows_struct = find_windows_struct(struct)
     assert(not windows_struct is None) #must find windows_struct
     for field in struct.get_fields():
@@ -472,7 +448,6 @@ def handle_method(cfile, classname, winclassname, cppname, method, cpp, cpp_h, e
         cfile.write(", %s *_r" % method.result_type.spelling)
     unnamed = 'a'
     need_convert = []
-    manual_convert = []
     for param in list(method.get_children()):
         if param.kind == clang.cindex.CursorKind.PARM_DECL:
             if param.type.kind == clang.cindex.TypeKind.POINTER and \
@@ -492,8 +467,6 @@ def handle_method(cfile, classname, winclassname, cppname, method, cpp, cpp_h, e
                 need_convert.append(param)
                 #preserve pointers
                 win_name = typename.replace(real_type.spelling, "win%s_%s" % (real_type.spelling, sdkver))
-            elif real_type.spelling in manual_type_converters:
-                manual_convert.append(param)
 
             if param.spelling == "":
                 cfile.write(", %s _%s" % (win_name, unnamed))
@@ -529,19 +502,13 @@ def handle_method(cfile, classname, winclassname, cppname, method, cpp, cpp_h, e
     for param in need_convert:
         if param.type.kind == clang.cindex.TypeKind.POINTER:
             #handle single pointers, but not double pointers
-            real_type = param.type;
-            while real_type.kind == clang.cindex.TypeKind.POINTER:
-                real_type = real_type.get_pointee()
-            assert(param.type.get_pointee().kind == clang.cindex.TypeKind.RECORD or \
-                    strip_const(real_type.spelling) in manually_handled_structs)
+            assert(param.type.get_pointee().kind == clang.cindex.TypeKind.RECORD)
             cpp.write("    %s lin_%s;\n" % (strip_const(param.type.get_pointee().spelling), param.spelling))
-            cpp.write("    win_to_lin_struct_%s_%s(%s, &lin_%s);\n" % (strip_const(real_type.spelling), sdkver, param.spelling, param.spelling))
+            cpp.write("    win_to_lin_struct_%s_%s(%s, &lin_%s);\n" % (strip_const(param.type.get_pointee().spelling), sdkver, param.spelling, param.spelling))
         else:
             #raw structs
             cpp.write("    %s lin_%s;\n" % (param.type.spelling, param.spelling))
             cpp.write("    win_to_lin_struct_%s_%s(&%s, &lin_%s);\n" % (param.type.spelling, sdkver, param.spelling, param.spelling))
-    for param in manual_convert:
-        cpp.write("    %s = (%s)manual_convert_%s((void*)%s);\n" % (param.spelling, param.type.spelling, param.type.spelling, param.spelling))
 
     cfile.write("    TRACE(\"%p\\n\", _this);\n")
 
@@ -626,14 +593,7 @@ def handle_method(cfile, classname, winclassname, cppname, method, cpp, cpp_h, e
     for param in need_convert:
         if param.type.kind == clang.cindex.TypeKind.POINTER:
             if not "const " in param.type.spelling: #don't modify const arguments
-                real_type = param.type;
-                while real_type.kind == clang.cindex.TypeKind.POINTER:
-                    real_type = real_type.get_pointee()
-                if strip_const(real_type.spelling) in manually_handled_structs:
-                    #this is clumsy
-                    cpp.write("    lin_to_win_struct_%s_%s(retval, &lin_%s, %s);\n" % (real_type.spelling, sdkver, param.spelling, param.spelling))
-                else:
-                    cpp.write("    lin_to_win_struct_%s_%s(&lin_%s, %s);\n" % (real_type.spelling, sdkver, param.spelling, param.spelling))
+                cpp.write("    lin_to_win_struct_%s_%s(&lin_%s, %s);\n" % (param.type.get_pointee().spelling, sdkver, param.spelling, param.spelling))
         else:
             cpp.write("    lin_to_win_struct_%s_%s(&lin_%s, &%s);\n" % (param.type.spelling, sdkver, param.spelling, param.spelling))
     if method.result_type.kind != clang.cindex.TypeKind.VOID and \
@@ -690,8 +650,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(steamclient);
     cpp = open("%s.cpp" % cppname, "w")
     cpp.write("#include \"steam_defs.h\"\n")
     cpp.write("#include \"steamworks_sdk_%s/steam_api.h\"\n" % sdkver)
-    if os.path.isfile("steamworks_sdk_%s/steamnetworkingtypes.h" % sdkver):
-        cpp.write("#include \"steamworks_sdk_%s/steamnetworkingtypes.h\"\n" % sdkver)
     if not fname == "steam_api.h":
         cpp.write("#include \"steamworks_sdk_%s/%s\"\n" % (sdkver, fname))
     cpp.write("#include \"steamclient_private.h\"\n")
@@ -710,8 +668,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(steamclient);
     cfile.write("} %s;\n\n" % winclassname)
     methods = []
     for child in children:
-        if child.kind == clang.cindex.CursorKind.CXX_METHOD and \
-                child.is_virtual_method():
+        if child.kind == clang.cindex.CursorKind.CXX_METHOD:
             handle_method(cfile, classnode.spelling, winclassname, cppname, child, cpp, cpp_h, methods)
         elif child.kind == clang.cindex.CursorKind.DESTRUCTOR:
             methods.append(handle_destructor(cfile, classnode.spelling, winclassname, child))
@@ -781,11 +738,7 @@ def handle_struct(sdkver, struct):
                         struct_needs_conversion(m.type):
                     to_file.write("    win%s_%s %s;\n" % (m.type.spelling, sdkver, m.displayname))
                 else:
-                    if m.type.kind == clang.cindex.TypeKind.POINTER and \
-                            m.type.get_pointee().kind == clang.cindex.TypeKind.FUNCTIONPROTO:
-                        to_file.write("    void *%s; /*fn pointer*/\n" % m.displayname)
-                    else:
-                        to_file.write("    %s %s;\n" % (m.type.spelling, m.displayname))
+                    to_file.write("    %s %s;\n" % (m.type.spelling, m.displayname))
         to_file.write("}  __attribute__ ((ms_struct));\n")
         to_file.write("#pragma pack( pop )\n")
 
@@ -800,11 +753,6 @@ def handle_struct(sdkver, struct):
             return
 
         struct_name = "%s_%s" % (struct.displayname, sdkver)
-
-        if struct_name in converted_structs:
-            return
-        converted_structs.append(struct_name)
-
         w2l_handler_name = "win_to_lin_struct_%s" % struct_name;
         l2w_handler_name = "lin_to_win_struct_%s" % struct_name;
 
@@ -813,16 +761,10 @@ def handle_struct(sdkver, struct):
         hfile.write("typedef struct win%s win%s;\n" % (struct_name, struct_name))
         hfile.write("struct %s;\n" % struct.displayname);
 
-        if strip_const(struct.spelling) in manually_handled_structs:
-            #this is clumsy
-            hfile.write("extern void %s(struct win%s **w, struct %s **l);\n" % (w2l_handler_name, struct_name, struct.displayname))
-            hfile.write("extern void %s(int retval, struct %s **l, struct win%s **w);\n" % (l2w_handler_name, struct.displayname, struct_name))
-            hfile.write("#endif\n\n")
-            return
-
         hfile.write("extern void %s(const struct win%s *w, struct %s *l);\n" % (w2l_handler_name, struct_name, struct.displayname))
         hfile.write("extern void %s(const struct %s *l, struct win%s *w);\n" % (l2w_handler_name, struct.displayname, struct_name))
         hfile.write("#endif\n\n")
+
     else:
         #for callbacks, we use the windows struct size in the cb dispatch switch
         windows_struct = find_windows_struct(struct.type)
@@ -867,8 +809,6 @@ def handle_struct(sdkver, struct):
             cppfile.write("#include \"steamworks_sdk_%s/isteamgameserverstats.h\"\n" % (sdkver))
         if os.path.isfile("steamworks_sdk_%s/isteamgamecoordinator.h" % sdkver):
             cppfile.write("#include \"steamworks_sdk_%s/isteamgamecoordinator.h\"\n" % sdkver)
-        if os.path.isfile("steamworks_sdk_%s/steamnetworkingtypes.h" % sdkver):
-            cppfile.write("#include \"steamworks_sdk_%s/steamnetworkingtypes.h\"\n" % sdkver)
         cppfile.write("#include \"steamclient_private.h\"\n")
         cppfile.write("extern \"C\" {\n")
         cppfile.write("#define SDKVER_%s\n" % sdkver)
@@ -928,14 +868,14 @@ for sdkver in sdk_versions:
         if not os.path.isfile(input_name):
             continue
         index = clang.cindex.Index.create()
-        linux_build = index.parse(input_name, args=['-x', 'c++', '-m32', '-Isteamworks_sdk_%s/' % sdkver, '-I' + CLANG_PATH + '/include/'])
+        linux_build = index.parse(input_name, args=['-x', 'c++', '-m32', '-Isteamworks_sdk_%s/' % sdkver, '-I/usr/lib/clang/7.0.1/include/'])
 
         diagnostics = list(linux_build.diagnostics)
         if len(diagnostics) > 0:
             print('There were parse errors')
             pprint.pprint(diagnostics)
         else:
-            windows_build = index.parse(input_name, args=['-x', 'c++', '-m32', '-Isteamworks_sdk_%s/' % sdkver, '-I' + CLANG_PATH + '/include/', '-mms-bitfields', '-U__linux__', '-Wno-incompatible-ms-struct'])
+            windows_build = index.parse(input_name, args=['-x', 'c++', '-m32', '-Isteamworks_sdk_%s/' % sdkver, '-I/usr/lib/clang/7.0.1/include/', '-mms-bitfields', '-U__linux__', '-Wno-incompatible-ms-struct'])
             diagnostics = list(windows_build.diagnostics)
             if len(diagnostics) > 0:
                 print('There were parse errors (windows build)')
